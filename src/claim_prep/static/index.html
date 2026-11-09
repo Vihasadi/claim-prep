@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ClaimPrep</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1f2328; --muted: #656d76; --line: #e4e4e0;
+    --accent: #0f766e; --accent-soft: #e6f4f2; --warn: #9a3412; --warn-soft: #fdf0e8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #111413; --panel: #1a1e1d; --ink: #e8ebe9; --muted: #9aa4a0; --line: #2b3130;
+      --accent: #5eead4; --accent-soft: #15302c; --warn: #fdba74; --warn-soft: #3a2416;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  header { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 12px 0 0; font-size: 18px; letter-spacing: -0.01em; }
+  header h1 span { color: var(--accent); }
+  input, button { font: inherit; color: inherit; }
+  input { padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-width: 0; }
+  #q { flex: 1 1 220px; max-width: 360px; }
+  #key { width: 170px; margin-left: auto; }
+  button { padding: 8px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+  main { max-width: 920px; margin: 0 auto; padding: 20px 16px 60px; }
+  .results { display: grid; gap: 6px; }
+  .result { text-align: left; display: flex; justify-content: space-between; gap: 12px; }
+  .result small, .muted { color: var(--muted); }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; margin-top: 14px; }
+  section h2 { margin: 0 0 8px; font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  .goal { font-size: 17px; font-weight: 600; }
+  ol, ul { margin: 0; padding-left: 20px; } li { margin: 6px 0; }
+  .why { display: block; color: var(--muted); font-size: 13px; }
+  .tag { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 999px; margin-left: 6px; background: var(--accent-soft); color: var(--accent); vertical-align: 1px; }
+  .tag.gap { background: var(--warn-soft); color: var(--warn); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+  .grid section { margin-top: 0; }
+  .titlebar { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-top: 18px; }
+  .titlebar h2 { margin: 0; font-size: 22px; }
+  .error { color: var(--warn); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Claim<span>Prep</span></h1>
+  <input id="q" placeholder="Deal id or account name" aria-label="Find a deal">
+  <button id="find" class="primary">Find</button>
+  <input id="key" type="password" placeholder="API key (if set)" aria-label="API key">
+</header>
+<main>
+  <div id="results" class="results"></div>
+  <div id="view"><p class="muted">Search for an open deal to get a two-minute brief before your call.</p></div>
+</main>
+<script>
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => { const n = Object.assign(document.createElement(tag), props); n.append(...kids); return n; };
+const LABELS = { metrics: "Metrics", economic_buyer: "Economic buyer", decision_criteria: "Decision criteria",
+  decision_process: "Decision process", paper_process: "Paper process", pain: "Pain", champion: "Champion", competition: "Competition" };
+
+try { $("#key").value = sessionStorage.getItem("claimprep-key") || ""; } catch {}
+$("#key").addEventListener("change", () => { try { sessionStorage.setItem("claimprep-key", $("#key").value); } catch {} });
+
+async function get(path) {
+  const headers = $("#key").value ? { "X-API-Key": $("#key").value } : {};
+  const res = await fetch(path, { headers });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.detail || `Request failed (${res.status})`);
+  return body;
+}
+
+async function find() {
+  const q = $("#q").value.trim(); if (!q) return;
+  $("#results").replaceChildren();
+  try {
+    const { results } = await get(`/api/deals?q=${encodeURIComponent(q)}`);
+    if (!results.length) { $("#results").append(el("p", { className: "muted", textContent: "No deals match." })); return; }
+    if (results.length === 1) return load(results[0].id);
+    $("#results").append(...results.map((r) => el("button", { className: "result", onclick: () => load(r.id) },
+      el("span", { textContent: `${r.account}: ${r.name}` }), el("small", { textContent: `#${r.id} · ${r.status} · ${r.stage}` }))));
+  } catch (e) { $("#results").append(el("p", { className: "error", textContent: e.message })); }
+}
+
+async function load(id, refresh = false) {
+  $("#results").replaceChildren();
+  $("#view").replaceChildren(el("p", { className: "muted", textContent: refresh ? "Rebuilding the brief..." : "Preparing the brief..." }));
+  try { render(await get(`/api/deals/${id}/brief${refresh ? "?refresh=true" : ""}`)); }
+  catch (e) { $("#view").replaceChildren(el("p", { className: "error", textContent: e.message })); }
+}
+
+function list(items, ordered, fn) { const l = el(ordered ? "ol" : "ul"); l.append(...items.map((i) => el("li", {}, ...fn(i)))); return l; }
+function section(title, ...kids) { return el("section", {}, el("h2", { textContent: title }), ...kids); }
+
+function render(data) {
+  const { deal, brief, checklist } = data;
+  const amount = deal.amount ? `$${Math.round(deal.amount).toLocaleString()}/yr` : "";
+  const parts = [
+    el("div", { className: "titlebar" },
+      el("h2", { textContent: `${deal.account}` }),
+      el("span", { className: "muted", textContent: [deal.stage, amount, `vs ${deal.competitor || "status quo"}`].filter(Boolean).join(" · ") })),
+    section("Goal for this call", el("div", { className: "goal", textContent: brief.call_goal }), el("p", { textContent: brief.snapshot })),
+    section("Ask", list(brief.questions, true, (q) => [
+      q.question, ...(q.source === "checklist" ? [el("span", { className: "tag gap", textContent: "checklist gap" })] : []),
+      el("span", { className: "why", textContent: q.why })])),
+  ];
+  if (brief.objections.length) parts.push(section("Expect these objections", list(brief.objections, false, (o) => [
+    el("strong", { textContent: o.objection }), el("span", { className: "why", textContent: o.response }),
+    ...(o.proof_deal_id ? [el("span", { className: "tag", textContent: `worked in deal #${o.proof_deal_id}` })] : [])]))) ;
+  const side = [];
+  if (brief.talk_track.length) side.push(section("Talk track", list(brief.talk_track, true, (t) => [t])));
+  if (brief.risks.length) side.push(section("Risks", list(brief.risks, false, (r) => [r])));
+  side.push(section("Qualification", el("div", { className: "chips" },
+    ...checklist.known.map((k) => el("span", { className: "tag", textContent: LABELS[k] })),
+    ...checklist.gaps.map((k) => el("span", { className: "tag gap", textContent: `${LABELS[k]}?` })))));
+  const evidence = [];
+  if (data.playbook) evidence.push(el("p", {}, el("strong", { textContent: `Playbook (${data.playbook.scope}): ` }), data.playbook.headline || ""));
+  if (data.similar_wins.length) evidence.push(list(data.similar_wins, false, (w) => [el("strong", { textContent: `#${w.deal_id} ${w.account}: ` }), w.turning_point]));
+  if (evidence.length) side.push(section("Evidence from past wins", ...evidence));
+  parts.push(el("div", { className: "grid" }, ...side));
+  parts.push(el("p", { className: "muted" }, `Generated ${new Date(data.generated_at).toLocaleString()}${data.cached ? " (cached)" : ""}. `,
+    el("button", { textContent: "Rebuild", onclick: () => load(deal.id, true) })));
+  $("#view").replaceChildren(...parts);
+}
+
+$("#find").onclick = find;
+$("#q").addEventListener("keydown", (e) => { if (e.key === "Enter") find(); });
+const initial = new URLSearchParams(location.search).get("deal");
+if (initial) load(initial);
+</script>
+</body>
+</html>
